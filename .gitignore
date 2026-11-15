@@ -1,0 +1,16 @@
+
+# Erlang compiled files
+ebin/
+*.beam
+
+# Erlang crash dumps
+erl_crash.dump
+
+# Logs and generated results
+*.log
+results/*.csv
+results/*.txt
+
+# Editor and operating system files
+.DS_Store
+.vscode/
