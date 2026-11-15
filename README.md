@@ -1,82 +1,46 @@
 
-# DOSP Project 4.1 — Reddit Clone Engine and Simulator
-
-## Project Overview
-
-An Erlang implementation of a Reddit-like social media engine and simulator.
-
-The project uses Erlang processes and message passing to model independent clients communicating with a central engine process.
-
 ## Current Implementation
 
 ### Milestone 1 — Engine and Client Registration
-
 - Central Reddit engine process
 - Independent client actor processes
 - Message-based client-to-engine communication
-- Account registration
-- Duplicate username rejection
-- Basic username validation
+- Account registration and duplicate username rejection
 - Concurrent registration simulator
 - Registration throughput measurement
 - EUnit tests
 
-## Project Structure
+### Milestone 2 — Subreddit Management
+- Create subreddits
+- Automatically add the creator as the first member
+- Join existing subreddits
+- Leave subreddits
+- Prevent duplicate subreddit creation
+- Prevent duplicate membership
+- Validate account and subreddit existence
+- Retrieve subreddit membership information
 
-```text
-project4.1/
-├── src/
-│   ├── reddit_engine.erl
-│   ├── reddit_client.erl
-│   └── reddit_simulator.erl
-├── test/
-│   └── reddit_tests.erl
-├── scripts/
-│   └── performance_test.erl
-├── results/
-├── ebin/
-├── Makefile
-├── README.md
-└── .gitignore
-```
+## Current Architecture
 
-## Requirements
+The central engine owns account and subreddit state.
 
-- Erlang/OTP
-- `erl`
-- `erlc`
-- GNU Make
+Independent client processes send requests to the engine using Erlang message passing. The engine processes requests sequentially through its receive loop, ensuring that state changes are serialized.
 
-No external Erlang dependencies are required.
+## Testing
 
-## Compile
+Run:
 
 ```bash
 make clean
-make compile
-```
-
-## Run Tests
-
-```bash
 make test
 ```
 
-## Run Simulator
+## Simulation
+
+Run:
 
 ```bash
 make simulate
 ```
 
-The default simulator run creates 100 client processes and submits concurrent registration requests.
-
-## Planned Milestones
-
-1. Engine, client actors, and account registration
-2. Subreddit creation, joining, and leaving
-3. Posts and user feeds
-4. Comments and hierarchical replies
-5. Upvotes, downvotes, and karma
-6. Direct messages and replies
-7. Zipf-based simulator and user connection/disconnection
-8. Performance experiments, results, and final report
+The default simulator creates 100 independent clients and measures concurrent account registration.
