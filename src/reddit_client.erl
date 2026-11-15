@@ -4,23 +4,35 @@
 -export([
     start_link/1,
     stop/1,
-    register/2
+    register/2,
+    create_subreddit/3,
+    join_subreddit/3,
+    leave_subreddit/3,
+    subreddit_info/2
 ]).
 
-%% Starts an independent client actor connected to the engine.
 start_link(EnginePid) when is_pid(EnginePid) ->
     spawn_link(fun() -> loop(EnginePid) end).
 
-%% Stops the client actor.
 stop(ClientPid) when is_pid(ClientPid) ->
     ClientPid ! stop,
     ok.
 
-%% Requests account registration through the client actor.
 register(ClientPid, Username) ->
     call(ClientPid, {register, Username}).
 
-%% Sends a request to the client actor and waits for its response.
+create_subreddit(ClientPid, Username, SubredditName) ->
+    call(ClientPid, {create_subreddit, Username, SubredditName}).
+
+join_subreddit(ClientPid, Username, SubredditName) ->
+    call(ClientPid, {join_subreddit, Username, SubredditName}).
+
+leave_subreddit(ClientPid, Username, SubredditName) ->
+    call(ClientPid, {leave_subreddit, Username, SubredditName}).
+
+subreddit_info(ClientPid, SubredditName) ->
+    call(ClientPid, {subreddit_info, SubredditName}).
+
 call(ClientPid, Request) ->
     Ref = make_ref(),
     ClientPid ! {call, self(), Ref, Request},
@@ -32,18 +44,11 @@ call(ClientPid, Request) ->
         {error, timeout}
     end.
 
-%% Client actor loop.
 loop(EnginePid) ->
     receive
-        {call, From, Ref, {register, Username}} ->
+        {call, From, Ref, Request} ->
             EngineRef = make_ref(),
-
-            EnginePid ! {
-                request,
-                self(),
-                EngineRef,
-                {register, Username}
-            },
+            EnginePid ! {request, self(), EngineRef, Request},
 
             receive
                 {reply, EngineRef, Result} ->
