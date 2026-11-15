@@ -5,27 +5,40 @@
     start_link/0,
     stop/1,
     register_account/2,
-    account_count/1
+    account_count/1,
+    create_subreddit/3,
+    join_subreddit/3,
+    leave_subreddit/3,
+    subreddit_info/2
 ]).
 
-%% Starts the central Reddit engine process.
 start_link() ->
-    spawn_link(fun() -> loop(#{}) end).
+    spawn_link(fun() ->
+        loop(#{accounts => #{}, subreddits => #{}})
+    end).
 
-%% Stops the engine.
 stop(EnginePid) when is_pid(EnginePid) ->
     EnginePid ! stop,
     ok.
 
-%% Engine-level registration request.
 register_account(EnginePid, Username) ->
     request(EnginePid, {register, Username}).
 
-%% Returns the number of registered accounts.
 account_count(EnginePid) ->
     request(EnginePid, account_count).
 
-%% Sends a request and waits for the engine's response.
+create_subreddit(EnginePid, Username, SubredditName) ->
+    request(EnginePid, {create_subreddit, Username, SubredditName}).
+
+join_subreddit(EnginePid, Username, SubredditName) ->
+    request(EnginePid, {join_subreddit, Username, SubredditName}).
+
+leave_subreddit(EnginePid, Username, SubredditName) ->
+    request(EnginePid, {leave_subreddit, Username, SubredditName}).
+
+subreddit_info(EnginePid, SubredditName) ->
+    request(EnginePid, {subreddit_info, SubredditName}).
+
 request(EnginePid, Request) ->
     Ref = make_ref(),
     EnginePid ! {request, self(), Ref, Request},
@@ -37,65 +50,208 @@ request(EnginePid, Request) ->
         {error, timeout}
     end.
 
-%% Central engine loop.
-%% The engine owns and updates the account map.
-loop(Accounts) ->
+loop(State) ->
     receive
         {request, From, Ref, {register, Username}} ->
-            case validate_username(Username) of
-                ok ->
-                    case maps:is_key(Username, Accounts) of
-                        true ->
-                            From ! {reply, Ref, {error, username_taken}},
-                            loop(Accounts);
-
-                        false ->
-                            Account = #{
-                                username => Username
-                            },
-
-                            UpdatedAccounts =
-                                maps:put(Username, Account, Accounts),
-
-                            From ! {reply, Ref, {ok, registered}},
-                            loop(UpdatedAccounts)
-                    end;
-
-                {error, Reason} ->
-                    From ! {reply, Ref, {error, Reason}},
-                    loop(Accounts)
-            end;
+            {Result, NewState} = register_user(Username, State),
+            reply_and_continue(From, Ref, Result, NewState);
 
         {request, From, Ref, account_count} ->
-            Count = maps:size(Accounts),
-            From ! {reply, Ref, {ok, Count}},
-            loop(Accounts);
+            Accounts = maps:get(accounts, State),
+            reply_and_continue(
+                From,
+                Ref,
+                {ok, maps:size(Accounts)},
+                State
+            );
+
+        {request, From, Ref,
+         {create_subreddit, Username, SubredditName}} ->
+            {Result, NewState} =
+                create_subreddit_state(Username, SubredditName, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref,
+         {join_subreddit, Username, SubredditName}} ->
+            {Result, NewState} =
+                join_subreddit_state(Username, SubredditName, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref,
+         {leave_subreddit, Username, SubredditName}} ->
+            {Result, NewState} =
+                leave_subreddit_state(Username, SubredditName, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {subreddit_info, SubredditName}} ->
+            Result = get_subreddit_info(SubredditName, State),
+            reply_and_continue(From, Ref, Result, State);
 
         stop ->
             ok;
 
         _UnexpectedMessage ->
-            loop(Accounts)
+            loop(State)
     end.
 
-%% Basic username validation.
-validate_username(Username)
-        when is_list(Username), length(Username) > 0 ->
-    case string:trim(Username) of
-        [] ->
-            {error, invalid_username};
-        _ ->
-            ok
+reply_and_continue(From, Ref, Result, NewState) ->
+    From ! {reply, Ref, Result},
+    loop(NewState).
+
+register_user(Username, State) ->
+    case validate_name(Username) of
+        ok ->
+            Accounts = maps:get(accounts, State),
+            case maps:is_key(Username, Accounts) of
+                true ->
+                    {{error, username_taken}, State};
+                false ->
+                    Account = #{username => Username},
+                    UpdatedAccounts = maps:put(Username, Account, Accounts),
+                    {{ok, registered},
+                     State#{accounts := UpdatedAccounts}}
+            end;
+        Error ->
+            {Error, State}
+    end.
+
+create_subreddit_state(Username, SubredditName, State) ->
+    Accounts = maps:get(accounts, State),
+    Subreddits = maps:get(subreddits, State),
+
+    case {maps:is_key(Username, Accounts), validate_name(SubredditName)} of
+        {false, _} ->
+            {{error, account_not_found}, State};
+
+        {true, {error, Reason}} ->
+            {{error, Reason}, State};
+
+        {true, ok} ->
+            case maps:is_key(SubredditName, Subreddits) of
+                true ->
+                    {{error, subreddit_exists}, State};
+
+                false ->
+                    Subreddit = #{
+                        name => SubredditName,
+                        creator => Username,
+                        members => #{Username => true}
+                    },
+
+                    UpdatedSubreddits =
+                        maps:put(SubredditName, Subreddit, Subreddits),
+
+                    {{ok, subreddit_created},
+                     State#{subreddits := UpdatedSubreddits}}
+            end
+    end.
+
+join_subreddit_state(Username, SubredditName, State) ->
+    Accounts = maps:get(accounts, State),
+    Subreddits = maps:get(subreddits, State),
+
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+
+        true ->
+            case maps:find(SubredditName, Subreddits) of
+                error ->
+                    {{error, subreddit_not_found}, State};
+
+                {ok, Subreddit} ->
+                    Members = maps:get(members, Subreddit),
+
+                    case maps:is_key(Username, Members) of
+                        true ->
+                            {{error, already_member}, State};
+
+                        false ->
+                            UpdatedMembers = maps:put(Username, true, Members),
+                            UpdatedSubreddit =
+                                Subreddit#{members := UpdatedMembers},
+
+                            UpdatedSubreddits =
+                                maps:put(
+                                    SubredditName,
+                                    UpdatedSubreddit,
+                                    Subreddits
+                                ),
+
+                            {{ok, joined},
+                             State#{subreddits := UpdatedSubreddits}}
+                    end
+            end
+    end.
+
+leave_subreddit_state(Username, SubredditName, State) ->
+    Accounts = maps:get(accounts, State),
+    Subreddits = maps:get(subreddits, State),
+
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+
+        true ->
+            case maps:find(SubredditName, Subreddits) of
+                error ->
+                    {{error, subreddit_not_found}, State};
+
+                {ok, Subreddit} ->
+                    Members = maps:get(members, Subreddit),
+
+                    case maps:is_key(Username, Members) of
+                        false ->
+                            {{error, not_member}, State};
+
+                        true ->
+                            UpdatedMembers = maps:remove(Username, Members),
+                            UpdatedSubreddit =
+                                Subreddit#{members := UpdatedMembers},
+
+                            UpdatedSubreddits =
+                                maps:put(
+                                    SubredditName,
+                                    UpdatedSubreddit,
+                                    Subreddits
+                                ),
+
+                            {{ok, left},
+                             State#{subreddits := UpdatedSubreddits}}
+                    end
+            end
+    end.
+
+get_subreddit_info(SubredditName, State) ->
+    Subreddits = maps:get(subreddits, State),
+
+    case maps:find(SubredditName, Subreddits) of
+        error ->
+            {error, subreddit_not_found};
+
+        {ok, Subreddit} ->
+            Members = maps:get(members, Subreddit),
+            {ok, #{
+                name => maps:get(name, Subreddit),
+                creator => maps:get(creator, Subreddit),
+                members => maps:keys(Members),
+                member_count => maps:size(Members)
+            }}
+    end.
+
+validate_name(Name)
+        when is_list(Name), length(Name) > 0 ->
+    case string:trim(Name) of
+        [] -> {error, invalid_name};
+        _ -> ok
     end;
 
-validate_username(Username)
-        when is_binary(Username), byte_size(Username) > 0 ->
-    case string:trim(Username) of
-        <<>> ->
-            {error, invalid_username};
-        _ ->
-            ok
+validate_name(Name)
+        when is_binary(Name), byte_size(Name) > 0 ->
+    case string:trim(Name) of
+        <<>> -> {error, invalid_name};
+        _ -> ok
     end;
 
-validate_username(_) ->
-    {error, invalid_username}.
+validate_name(_) ->
+    {error, invalid_name}.
