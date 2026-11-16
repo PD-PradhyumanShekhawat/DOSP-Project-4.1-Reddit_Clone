@@ -13,8 +13,15 @@
     create_post/4,
     get_feed/2,
     add_comment/5,
-    get_post_comments/2
+    get_post_comments/2,
+    vote_post/4,
+    vote_comment/4,
+    get_post_score/2,
+    get_comment_score/2,
+    get_karma/2
 ]).
+
+%% Engine lifecycle
 
 start_link() ->
     spawn_link(fun() ->
@@ -24,7 +31,8 @@ start_link() ->
             posts => [],
             next_post_id => 1,
             comments => [],
-            next_comment_id => 1
+            next_comment_id => 1,
+            votes => #{}
         })
     end).
 
@@ -32,49 +40,64 @@ stop(EnginePid) when is_pid(EnginePid) ->
     EnginePid ! stop,
     ok.
 
+%% Public API
+
 register_account(EnginePid, Username) ->
     request(EnginePid, {register, Username}).
 
 account_count(EnginePid) ->
     request(EnginePid, account_count).
 
-create_subreddit(EnginePid, Username, SubredditName) ->
-    request(EnginePid, {create_subreddit, Username, SubredditName}).
+create_subreddit(EnginePid, Username, Name) ->
+    request(EnginePid, {create_subreddit, Username, Name}).
 
-join_subreddit(EnginePid, Username, SubredditName) ->
-    request(EnginePid, {join_subreddit, Username, SubredditName}).
+join_subreddit(EnginePid, Username, Name) ->
+    request(EnginePid, {join_subreddit, Username, Name}).
 
-leave_subreddit(EnginePid, Username, SubredditName) ->
-    request(EnginePid, {leave_subreddit, Username, SubredditName}).
+leave_subreddit(EnginePid, Username, Name) ->
+    request(EnginePid, {leave_subreddit, Username, Name}).
 
-subreddit_info(EnginePid, SubredditName) ->
-    request(EnginePid, {subreddit_info, SubredditName}).
+subreddit_info(EnginePid, Name) ->
+    request(EnginePid, {subreddit_info, Name}).
 
-create_post(EnginePid, Username, SubredditName, Content) ->
-    request(EnginePid, {create_post, Username, SubredditName, Content}).
+create_post(EnginePid, Username, Subreddit, Content) ->
+    request(EnginePid, {create_post, Username, Subreddit, Content}).
 
 get_feed(EnginePid, Username) ->
     request(EnginePid, {get_feed, Username}).
 
-add_comment(EnginePid, Username, PostId, ParentCommentId, Content) ->
-    request(
-        EnginePid,
-        {add_comment, Username, PostId, ParentCommentId, Content}
-    ).
+add_comment(EnginePid, Username, PostId, ParentId, Content) ->
+    request(EnginePid, {add_comment, Username, PostId, ParentId, Content}).
 
 get_post_comments(EnginePid, PostId) ->
     request(EnginePid, {get_post_comments, PostId}).
 
+vote_post(EnginePid, Username, PostId, Vote) ->
+    request(EnginePid, {vote_post, Username, PostId, Vote}).
+
+vote_comment(EnginePid, Username, CommentId, Vote) ->
+    request(EnginePid, {vote_comment, Username, CommentId, Vote}).
+
+get_post_score(EnginePid, PostId) ->
+    request(EnginePid, {get_post_score, PostId}).
+
+get_comment_score(EnginePid, CommentId) ->
+    request(EnginePid, {get_comment_score, CommentId}).
+
+get_karma(EnginePid, Username) ->
+    request(EnginePid, {get_karma, Username}).
+
 request(EnginePid, Request) ->
     Ref = make_ref(),
     EnginePid ! {request, self(), Ref, Request},
-
     receive
         {reply, Ref, Result} ->
             Result
     after 5000 ->
         {error, timeout}
     end.
+
+%% Main engine process
 
 loop(State) ->
     receive
@@ -88,32 +111,28 @@ loop(State) ->
                 From, Ref, {ok, maps:size(Accounts)}, State
             );
 
-        {request, From, Ref,
-         {create_subreddit, Username, SubredditName}} ->
+        {request, From, Ref, {create_subreddit, Username, Name}} ->
             {Result, NewState} =
-                create_subreddit_state(Username, SubredditName, State),
+                create_subreddit_state(Username, Name, State),
             reply_and_continue(From, Ref, Result, NewState);
 
-        {request, From, Ref,
-         {join_subreddit, Username, SubredditName}} ->
+        {request, From, Ref, {join_subreddit, Username, Name}} ->
             {Result, NewState} =
-                join_subreddit_state(Username, SubredditName, State),
+                join_subreddit_state(Username, Name, State),
             reply_and_continue(From, Ref, Result, NewState);
 
-        {request, From, Ref,
-         {leave_subreddit, Username, SubredditName}} ->
+        {request, From, Ref, {leave_subreddit, Username, Name}} ->
             {Result, NewState} =
-                leave_subreddit_state(Username, SubredditName, State),
+                leave_subreddit_state(Username, Name, State),
             reply_and_continue(From, Ref, Result, NewState);
 
-        {request, From, Ref, {subreddit_info, SubredditName}} ->
-            Result = get_subreddit_info(SubredditName, State),
+        {request, From, Ref, {subreddit_info, Name}} ->
+            Result = get_subreddit_info(Name, State),
             reply_and_continue(From, Ref, Result, State);
 
-        {request, From, Ref,
-         {create_post, Username, SubredditName, Content}} ->
+        {request, From, Ref, {create_post, Username, Name, Content}} ->
             {Result, NewState} =
-                create_post_state(Username, SubredditName, Content, State),
+                create_post_state(Username, Name, Content, State),
             reply_and_continue(From, Ref, Result, NewState);
 
         {request, From, Ref, {get_feed, Username}} ->
@@ -121,15 +140,37 @@ loop(State) ->
             reply_and_continue(From, Ref, Result, State);
 
         {request, From, Ref,
-         {add_comment, Username, PostId, ParentCommentId, Content}} ->
+         {add_comment, Username, PostId, ParentId, Content}} ->
             {Result, NewState} =
                 add_comment_state(
-                    Username, PostId, ParentCommentId, Content, State
+                    Username, PostId, ParentId, Content, State
                 ),
             reply_and_continue(From, Ref, Result, NewState);
 
         {request, From, Ref, {get_post_comments, PostId}} ->
             Result = get_post_comments_state(PostId, State),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref, {vote_post, Username, PostId, Vote}} ->
+            {Result, NewState} =
+                vote_state(post, Username, PostId, Vote, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {vote_comment, Username, CommentId, Vote}} ->
+            {Result, NewState} =
+                vote_state(comment, Username, CommentId, Vote, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {get_post_score, PostId}} ->
+            Result = target_score(post, PostId, State),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref, {get_comment_score, CommentId}} ->
+            Result = target_score(comment, CommentId, State),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref, {get_karma, Username}} ->
+            Result = account_karma(Username, State),
             reply_and_continue(From, Ref, Result, State);
 
         stop ->
@@ -154,7 +195,9 @@ register_user(Username, State) ->
                     {{error, username_taken}, State};
                 false ->
                     Account = #{username => Username},
-                    UpdatedAccounts = maps:put(Username, Account, Accounts),
+                    UpdatedAccounts = maps:put(
+                        Username, Account, Accounts
+                    ),
                     {{ok, registered},
                      State#{accounts := UpdatedAccounts}}
             end;
@@ -164,33 +207,32 @@ register_user(Username, State) ->
 
 %% Subreddit management
 
-create_subreddit_state(Username, SubredditName, State) ->
+create_subreddit_state(Username, Name, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
 
-    case {maps:is_key(Username, Accounts), validate_name(SubredditName)} of
+    case {maps:is_key(Username, Accounts), validate_name(Name)} of
         {false, _} ->
             {{error, account_not_found}, State};
         {true, {error, Reason}} ->
             {{error, Reason}, State};
         {true, ok} ->
-            case maps:is_key(SubredditName, Subreddits) of
+            case maps:is_key(Name, Subreddits) of
                 true ->
                     {{error, subreddit_exists}, State};
                 false ->
                     Subreddit = #{
-                        name => SubredditName,
+                        name => Name,
                         creator => Username,
                         members => #{Username => true}
                     },
-                    UpdatedSubreddits =
-                        maps:put(SubredditName, Subreddit, Subreddits),
+                    Updated = maps:put(Name, Subreddit, Subreddits),
                     {{ok, subreddit_created},
-                     State#{subreddits := UpdatedSubreddits}}
+                     State#{subreddits := Updated}}
             end
     end.
 
-join_subreddit_state(Username, SubredditName, State) ->
+join_subreddit_state(Username, Name, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
 
@@ -198,7 +240,7 @@ join_subreddit_state(Username, SubredditName, State) ->
         false ->
             {{error, account_not_found}, State};
         true ->
-            case maps:find(SubredditName, Subreddits) of
+            case maps:find(Name, Subreddits) of
                 error ->
                     {{error, subreddit_not_found}, State};
                 {ok, Subreddit} ->
@@ -207,22 +249,21 @@ join_subreddit_state(Username, SubredditName, State) ->
                         true ->
                             {{error, already_member}, State};
                         false ->
-                            UpdatedMembers = maps:put(Username, true, Members),
+                            UpdatedMembers = maps:put(
+                                Username, true, Members
+                            ),
                             UpdatedSubreddit =
                                 Subreddit#{members := UpdatedMembers},
-                            UpdatedSubreddits =
-                                maps:put(
-                                    SubredditName,
-                                    UpdatedSubreddit,
-                                    Subreddits
-                                ),
+                            UpdatedSubreddits = maps:put(
+                                Name, UpdatedSubreddit, Subreddits
+                            ),
                             {{ok, joined},
                              State#{subreddits := UpdatedSubreddits}}
                     end
             end
     end.
 
-leave_subreddit_state(Username, SubredditName, State) ->
+leave_subreddit_state(Username, Name, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
 
@@ -230,7 +271,7 @@ leave_subreddit_state(Username, SubredditName, State) ->
         false ->
             {{error, account_not_found}, State};
         true ->
-            case maps:find(SubredditName, Subreddits) of
+            case maps:find(Name, Subreddits) of
                 error ->
                     {{error, subreddit_not_found}, State};
                 {ok, Subreddit} ->
@@ -239,25 +280,23 @@ leave_subreddit_state(Username, SubredditName, State) ->
                         false ->
                             {{error, not_member}, State};
                         true ->
-                            UpdatedMembers = maps:remove(Username, Members),
+                            UpdatedMembers = maps:remove(
+                                Username, Members
+                            ),
                             UpdatedSubreddit =
                                 Subreddit#{members := UpdatedMembers},
-                            UpdatedSubreddits =
-                                maps:put(
-                                    SubredditName,
-                                    UpdatedSubreddit,
-                                    Subreddits
-                                ),
+                            UpdatedSubreddits = maps:put(
+                                Name, UpdatedSubreddit, Subreddits
+                            ),
                             {{ok, left},
                              State#{subreddits := UpdatedSubreddits}}
                     end
             end
     end.
 
-get_subreddit_info(SubredditName, State) ->
+get_subreddit_info(Name, State) ->
     Subreddits = maps:get(subreddits, State),
-
-    case maps:find(SubredditName, Subreddits) of
+    case maps:find(Name, Subreddits) of
         error ->
             {error, subreddit_not_found};
         {ok, Subreddit} ->
@@ -270,9 +309,9 @@ get_subreddit_info(SubredditName, State) ->
             }}
     end.
 
-%% Post creation
+%% Post creation and feeds
 
-create_post_state(Username, SubredditName, Content, State) ->
+create_post_state(Username, Name, Content, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
 
@@ -280,7 +319,7 @@ create_post_state(Username, SubredditName, Content, State) ->
         false ->
             {{error, account_not_found}, State};
         true ->
-            case maps:find(SubredditName, Subreddits) of
+            case maps:find(Name, Subreddits) of
                 error ->
                     {{error, subreddit_not_found}, State};
                 {ok, Subreddit} ->
@@ -297,7 +336,7 @@ create_post_state(Username, SubredditName, Content, State) ->
                                     Post = #{
                                         id => PostId,
                                         author => Username,
-                                        subreddit => SubredditName,
+                                        subreddit => Name,
                                         content => Content,
                                         timestamp =>
                                             erlang:system_time(second)
@@ -315,23 +354,23 @@ create_post_state(Username, SubredditName, Content, State) ->
 
 get_user_feed(Username, State) ->
     Accounts = maps:get(accounts, State),
-
     case maps:is_key(Username, Accounts) of
         false ->
             {error, account_not_found};
         true ->
             Subreddits = maps:get(subreddits, State),
-            JoinedSubreddits = [
+            Joined = [
                 Name
                 || {Name, Subreddit} <- maps:to_list(Subreddits),
-                   maps:is_key(Username, maps:get(members, Subreddit))
+                   maps:is_key(
+                       Username, maps:get(members, Subreddit)
+                   )
             ],
             Feed = [
                 Post
                 || Post <- maps:get(posts, State),
                    lists:member(
-                       maps:get(subreddit, Post),
-                       JoinedSubreddits
+                       maps:get(subreddit, Post), Joined
                    )
             ],
             {ok, Feed}
@@ -339,7 +378,7 @@ get_user_feed(Username, State) ->
 
 %% Comment creation and hierarchical replies
 
-add_comment_state(Username, PostId, ParentCommentId, Content, State) ->
+add_comment_state(Username, PostId, ParentId, Content, State) ->
     Accounts = maps:get(accounts, State),
     Posts = maps:get(posts, State),
     Comments = maps:get(comments, State),
@@ -353,10 +392,10 @@ add_comment_state(Username, PostId, ParentCommentId, Content, State) ->
                     {{error, post_not_found}, State};
                 {ok, Post} ->
                     SubredditName = maps:get(subreddit, Post),
-                    Subreddits = maps:get(subreddits, State),
-                    Subreddit = maps:get(SubredditName, Subreddits),
+                    Subreddit = maps:get(
+                        SubredditName, maps:get(subreddits, State)
+                    ),
                     Members = maps:get(members, Subreddit),
-
                     case maps:is_key(Username, Members) of
                         false ->
                             {{error, not_member}, State};
@@ -365,36 +404,29 @@ add_comment_state(Username, PostId, ParentCommentId, Content, State) ->
                                 {error, Reason} ->
                                     {{error, Reason}, State};
                                 ok ->
-                                    validate_and_store_comment(
-                                        Username,
-                                        PostId,
-                                        ParentCommentId,
-                                        Content,
-                                        Comments,
-                                        State
+                                    store_comment(
+                                        Username, PostId, ParentId,
+                                        Content, Comments, State
                                     )
                             end
                     end
             end
     end.
 
-validate_and_store_comment(
-    Username, PostId, ParentCommentId, Content, Comments, State
-) ->
-    case validate_parent_comment(PostId, ParentCommentId, Comments) of
+store_comment(Username, PostId, ParentId, Content, Comments, State) ->
+    case validate_parent_comment(PostId, ParentId, Comments) of
         ok ->
             CommentId = maps:get(next_comment_id, State),
             Comment = #{
                 id => CommentId,
                 post_id => PostId,
-                parent_id => ParentCommentId,
+                parent_id => ParentId,
                 author => Username,
                 content => Content,
                 timestamp => erlang:system_time(second)
             },
-            UpdatedComments = [Comment | Comments],
             NewState = State#{
-                comments := UpdatedComments,
+                comments := [Comment | Comments],
                 next_comment_id := CommentId + 1
             },
             {{ok, CommentId}, NewState};
@@ -404,18 +436,18 @@ validate_and_store_comment(
 
 validate_parent_comment(_PostId, none, _Comments) ->
     ok;
-validate_parent_comment(PostId, ParentCommentId, Comments)
-        when is_integer(ParentCommentId) ->
-    case find_comment(ParentCommentId, Comments) of
+validate_parent_comment(PostId, ParentId, Comments)
+        when is_integer(ParentId) ->
+    case find_comment(ParentId, Comments) of
         error ->
             {error, parent_comment_not_found};
-        {ok, ParentComment} ->
-            case maps:get(post_id, ParentComment) =:= PostId of
+        {ok, Parent} ->
+            case maps:get(post_id, Parent) =:= PostId of
                 true -> ok;
                 false -> {error, parent_comment_wrong_post}
             end
     end;
-validate_parent_comment(_PostId, _ParentCommentId, _Comments) ->
+validate_parent_comment(_PostId, _ParentId, _Comments) ->
     {error, invalid_parent_comment_id}.
 
 get_post_comments_state(PostId, State) ->
@@ -424,35 +456,148 @@ get_post_comments_state(PostId, State) ->
             {error, post_not_found};
         {ok, _Post} ->
             Comments = maps:get(comments, State),
-            Tree = build_comment_tree(PostId, none, Comments),
-            {ok, Tree}
+            {ok, build_comment_tree(PostId, none, Comments)}
     end.
 
 build_comment_tree(PostId, ParentId, Comments) ->
-    DirectComments = lists:sort(
+    Direct = lists:sort(
         fun(A, B) -> maps:get(id, A) < maps:get(id, B) end,
         [
-            Comment
-            || Comment <- Comments,
-               maps:get(post_id, Comment) =:= PostId,
-               maps:get(parent_id, Comment) =:= ParentId
+            C
+            || C <- Comments,
+               maps:get(post_id, C) =:= PostId,
+               maps:get(parent_id, C) =:= ParentId
         ]
     ),
-
     [
-        Comment#{
+        C#{
             replies => build_comment_tree(
-                PostId,
-                maps:get(id, Comment),
-                Comments
+                PostId, maps:get(id, C), Comments
             )
         }
-        || Comment <- DirectComments
+        || C <- Direct
     ].
+
+%% Voting
+
+vote_state(Type, Username, TargetId, Vote, State) ->
+    Accounts = maps:get(accounts, State),
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+        true ->
+            case validate_vote(Vote) of
+                false ->
+                    {{error, invalid_vote}, State};
+                true ->
+                    case find_target(Type, TargetId, State) of
+                        error ->
+                            {{error, target_not_found}, State};
+                        {ok, Target} ->
+                            Author = maps:get(author, Target),
+                            case Author =:= Username of
+                                true ->
+                                    {{error, self_vote}, State};
+                                false ->
+                                    store_vote(
+                                        Type, TargetId, Username,
+                                        Vote, State
+                                    )
+                            end
+                    end
+            end
+    end.
+
+validate_vote(upvote) -> true;
+validate_vote(downvote) -> true;
+validate_vote(_) -> false.
+
+find_target(post, Id, State) ->
+    find_post(Id, maps:get(posts, State));
+find_target(comment, Id, State) ->
+    find_comment(Id, maps:get(comments, State)).
+
+store_vote(Type, TargetId, Username, Vote, State) ->
+    Votes = maps:get(votes, State),
+    Key = {Type, TargetId, Username},
+    Previous = maps:get(Key, Votes, none),
+
+    case Previous =:= Vote of
+        true ->
+            {{ok, unchanged}, State};
+        false ->
+            UpdatedVotes = maps:put(Key, Vote, Votes),
+            NewState = State#{votes := UpdatedVotes},
+            {{ok, Vote}, NewState}
+    end.
+
+target_score(Type, TargetId, State) ->
+    case find_target(Type, TargetId, State) of
+        error ->
+            {error, target_not_found};
+        {ok, _Target} ->
+            {Upvotes, Downvotes} = count_votes(Type, TargetId, State),
+            {ok, #{
+                upvotes => Upvotes,
+                downvotes => Downvotes,
+                score => Upvotes - Downvotes
+            }}
+    end.
+
+count_votes(Type, TargetId, State) ->
+    Votes = maps:get(votes, State),
+    VoteList = [
+        Vote
+        || {{VoteType, VoteTargetId, _Username}, Vote} <-
+            maps:to_list(Votes),
+           VoteType =:= Type,
+           VoteTargetId =:= TargetId
+    ],
+    Upvotes = length([V || V <- VoteList, V =:= upvote]),
+    Downvotes = length([V || V <- VoteList, V =:= downvote]),
+    {Upvotes, Downvotes}.
+
+account_karma(Username, State) ->
+    Accounts = maps:get(accounts, State),
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {error, account_not_found};
+        true ->
+            PostIds = [
+                maps:get(id, P)
+                || P <- maps:get(posts, State),
+                   maps:get(author, P) =:= Username
+            ],
+            CommentIds = [
+                maps:get(id, C)
+                || C <- maps:get(comments, State),
+                   maps:get(author, C) =:= Username
+            ],
+            PostKarma = lists:sum([
+                score_value(post, Id, State)
+                || Id <- PostIds
+            ]),
+            CommentKarma = lists:sum([
+                score_value(comment, Id, State)
+                || Id <- CommentIds
+            ]),
+            {ok, #{
+                username => Username,
+                post_karma => PostKarma,
+                comment_karma => CommentKarma,
+                total_karma => PostKarma + CommentKarma
+            }}
+    end.
+
+score_value(Type, TargetId, State) ->
+    {Upvotes, Downvotes} = count_votes(Type, TargetId, State),
+    Upvotes - Downvotes.
+
+%% Lookup helpers
 
 find_post(PostId, Posts) ->
     case lists:search(
-        fun(Post) -> maps:get(id, Post) =:= PostId end,
+        fun(P) -> maps:get(id, P) =:= PostId end,
         Posts
     ) of
         false -> error;
@@ -461,7 +606,7 @@ find_post(PostId, Posts) ->
 
 find_comment(CommentId, Comments) ->
     case lists:search(
-        fun(Comment) -> maps:get(id, Comment) =:= CommentId end,
+        fun(C) -> maps:get(id, C) =:= CommentId end,
         Comments
     ) of
         false -> error;
