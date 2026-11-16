@@ -10,7 +10,9 @@
     leave_subreddit/3,
     subreddit_info/2,
     create_post/4,
-    get_feed/2
+    get_feed/2,
+    add_comment/5,
+    get_post_comments/2
 ]).
 
 start_link(EnginePid) when is_pid(EnginePid) ->
@@ -40,6 +42,15 @@ create_post(ClientPid, Username, SubredditName, Content) ->
 
 get_feed(ClientPid, Username) ->
     call(ClientPid, {get_feed, Username}).
+
+add_comment(ClientPid, Username, PostId, ParentCommentId, Content) ->
+    call(
+        ClientPid,
+        {add_comment, Username, PostId, ParentCommentId, Content}
+    ).
+
+get_post_comments(ClientPid, PostId) ->
+    call(ClientPid, {get_post_comments, PostId}).
 
 call(ClientPid, Request) ->
     Ref = make_ref(),
