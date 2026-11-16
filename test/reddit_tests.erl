@@ -3,6 +3,8 @@
 
 -include_lib("eunit/include/eunit.hrl").
 
+%% Milestone 1: accounts and clients
+
 engine_start_test() ->
     Engine = reddit_engine:start_link(),
     try
@@ -83,6 +85,8 @@ simulator_test() ->
     ?assertEqual(0, maps:get(failed_registrations, Summary)),
     ?assertEqual({ok, 25}, maps:get(engine_account_count, Summary)).
 
+%% Milestone 2: subreddit management
+
 create_subreddit_test() ->
     with_engine_client(fun(_Engine, Client) ->
         register_user(Client, "alice"),
@@ -100,10 +104,7 @@ create_subreddit_test() ->
 duplicate_subreddit_test() ->
     with_engine_client(fun(_Engine, Client) ->
         register_user(Client, "alice"),
-        ?assertEqual(
-            {ok, subreddit_created},
-            reddit_client:create_subreddit(Client, "alice", "erlang")
-        ),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
         ?assertEqual(
             {error, subreddit_exists},
             reddit_client:create_subreddit(Client, "alice", "erlang")
@@ -130,7 +131,6 @@ duplicate_join_test() ->
     with_engine_client(fun(_Engine, Client) ->
         register_user(Client, "alice"),
         reddit_client:create_subreddit(Client, "alice", "erlang"),
-
         ?assertEqual(
             {error, already_member},
             reddit_client:join_subreddit(Client, "alice", "erlang")
@@ -159,7 +159,6 @@ leave_nonmember_test() ->
         register_user(Client, "alice"),
         register_user(Client, "bob"),
         reddit_client:create_subreddit(Client, "alice", "erlang"),
-
         ?assertEqual(
             {error, not_member},
             reddit_client:leave_subreddit(Client, "bob", "erlang")
@@ -184,6 +183,150 @@ unknown_account_test() ->
         ?assertEqual(
             {error, account_not_found},
             reddit_client:join_subreddit(Client, "unknown", "erlang")
+        )
+    end).
+
+%% Milestone 3: posts and feeds
+
+create_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+
+        {ok, PostId} = reddit_client:create_post(
+            Client,
+            "alice",
+            "erlang",
+            "Learning Erlang actors"
+        ),
+
+        ?assertEqual(1, PostId)
+    end).
+
+post_appears_in_feed_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+
+        {ok, _PostId} = reddit_client:create_post(
+            Client,
+            "alice",
+            "erlang",
+            "First post"
+        ),
+
+        {ok, Feed} = reddit_client:get_feed(Client, "alice"),
+        ?assertEqual(1, length(Feed)),
+
+        [Post] = Feed,
+        ?assertEqual("alice", maps:get(author, Post)),
+        ?assertEqual("erlang", maps:get(subreddit, Post)),
+        ?assertEqual("First post", maps:get(content, Post))
+    end).
+
+joined_member_sees_posts_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+
+        reddit_client:create_post(
+            Client, "alice", "erlang", "Hello members"
+        ),
+
+        {ok, Feed} = reddit_client:get_feed(Client, "bob"),
+        ?assertEqual(1, length(Feed))
+    end).
+
+nonmember_cannot_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+
+        ?assertEqual(
+            {error, not_member},
+            reddit_client:create_post(
+                Client, "bob", "erlang", "Unauthorized post"
+            )
+        )
+    end).
+
+post_in_missing_subreddit_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        ?assertEqual(
+            {error, subreddit_not_found},
+            reddit_client:create_post(
+                Client, "alice", "unknown", "Hello"
+            )
+        )
+    end).
+
+empty_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+
+        ?assertEqual(
+            {error, empty_content},
+            reddit_client:create_post(Client, "alice", "erlang", "")
+        ),
+        ?assertEqual(
+            {error, empty_content},
+            reddit_client:create_post(Client, "alice", "erlang", "   ")
+        )
+    end).
+
+feed_excludes_unjoined_subreddits_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:create_subreddit(Client, "bob", "programming"),
+
+        reddit_client:create_post(
+            Client, "alice", "erlang", "Erlang post"
+        ),
+        reddit_client:create_post(
+            Client, "bob", "programming", "Programming post"
+        ),
+
+        {ok, AliceFeed} = reddit_client:get_feed(Client, "alice"),
+        ?assertEqual(1, length(AliceFeed)),
+        [AlicePost] = AliceFeed,
+        ?assertEqual("erlang", maps:get(subreddit, AlicePost))
+    end).
+
+left_subreddit_posts_disappear_from_feed_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        reddit_client:create_post(
+            Client, "alice", "erlang", "A post"
+        ),
+
+        {ok, FeedBeforeLeaving} =
+            reddit_client:get_feed(Client, "bob"),
+        ?assertEqual(1, length(FeedBeforeLeaving)),
+
+        reddit_client:leave_subreddit(Client, "bob", "erlang"),
+
+        {ok, FeedAfterLeaving} =
+            reddit_client:get_feed(Client, "bob"),
+        ?assertEqual([], FeedAfterLeaving)
+    end).
+
+unknown_user_feed_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual(
+            {error, account_not_found},
+            reddit_client:get_feed(Client, "unknown")
         )
     end).
 
