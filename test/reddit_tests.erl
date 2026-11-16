@@ -515,6 +515,184 @@ get_comments_for_missing_post_test() ->
     end).
 
 
+%% Voting and karma tests
+
+
+%% Milestone 5: voting and karma
+
+vote_post_upvote_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        ?assertEqual(
+            {ok, upvote},
+            reddit_client:vote_post(Client, "bob", PostId, upvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 1, downvotes => 0, score => 1}},
+            reddit_client:get_post_score(Client, PostId)
+        )
+    end).
+
+vote_post_downvote_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        ?assertEqual(
+            {ok, downvote},
+            reddit_client:vote_post(Client, "bob", PostId, downvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 0, downvotes => 1, score => -1}},
+            reddit_client:get_post_score(Client, PostId)
+        )
+    end).
+
+vote_switch_replaces_previous_vote_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        reddit_client:vote_post(Client, "bob", PostId, upvote),
+        ?assertEqual(
+            {ok, downvote},
+            reddit_client:vote_post(Client, "bob", PostId, downvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 0, downvotes => 1, score => -1}},
+            reddit_client:get_post_score(Client, PostId)
+        )
+    end).
+
+repeated_vote_does_not_duplicate_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        reddit_client:vote_post(Client, "bob", PostId, upvote),
+        ?assertEqual(
+            {ok, unchanged},
+            reddit_client:vote_post(Client, "bob", PostId, upvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 1, downvotes => 0, score => 1}},
+            reddit_client:get_post_score(Client, PostId)
+        )
+    end).
+
+self_vote_rejected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        ?assertEqual(
+            {error, self_vote},
+            reddit_client:vote_post(Client, "alice", PostId, upvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 0, downvotes => 0, score => 0}},
+            reddit_client:get_post_score(Client, PostId)
+        )
+    end).
+
+invalid_vote_rejected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+
+        ?assertEqual(
+            {error, invalid_vote},
+            reddit_client:vote_post(Client, "bob", PostId, neutral)
+        )
+    end).
+
+vote_comment_and_get_score_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+        {ok, CommentId} =
+            reddit_client:add_comment(
+                Client, "alice", PostId, none, "A comment"
+            ),
+
+        ?assertEqual(
+            {ok, upvote},
+            reddit_client:vote_comment(Client, "bob", CommentId, upvote)
+        ),
+        ?assertEqual(
+            {ok, #{upvotes => 1, downvotes => 0, score => 1}},
+            reddit_client:get_comment_score(Client, CommentId)
+        )
+    end).
+
+karma_aggregates_post_and_comment_scores_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        register_user(Client, "carol"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        reddit_client:join_subreddit(Client, "carol", "erlang"),
+        {ok, PostId} =
+            reddit_client:create_post(Client, "alice", "erlang", "Hello"),
+        {ok, CommentId} =
+            reddit_client:add_comment(
+                Client, "alice", PostId, none, "A comment"
+            ),
+
+        reddit_client:vote_post(Client, "bob", PostId, upvote),
+        reddit_client:vote_post(Client, "carol", PostId, upvote),
+        reddit_client:vote_comment(Client, "bob", CommentId, downvote),
+
+        ?assertEqual(
+            {ok, #{
+                username => "alice",
+                post_karma => 2,
+                comment_karma => -1,
+                total_karma => 1
+            }},
+            reddit_client:get_karma(Client, "alice")
+        )
+    end).
+
+karma_unknown_account_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual(
+            {error, account_not_found},
+            reddit_client:get_karma(Client, "unknown")
+        )
+    end).
+
+
+
 %% Test helpers
 
 with_engine_client(Fun) ->
