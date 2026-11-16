@@ -691,6 +691,194 @@ karma_unknown_account_test() ->
         )
     end).
 
+%% Direct messaging tests
+
+send_message_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual({ok, registered},
+            reddit_client:register(Client, "alice")),
+        ?assertEqual({ok, registered},
+            reddit_client:register(Client, "bob")),
+
+        ?assertEqual({ok, 1},
+            reddit_client:send_message(
+                Client, "alice", "bob", "Hello Bob"
+            )),
+
+        ?assertMatch(
+            {ok, [#{id := 1,
+                    sender := "alice",
+                    recipient := "bob",
+                    content := "Hello Bob",
+                    parent_id := none}]},
+            reddit_client:get_inbox(Client, "bob")
+        )
+    end).
+
+get_sent_messages_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+
+        reddit_client:send_message(
+            Client, "alice", "bob", "First message"
+        ),
+        reddit_client:send_message(
+            Client, "alice", "bob", "Second message"
+        ),
+
+        ?assertMatch(
+            {ok, [#{content := "First message"},
+                  #{content := "Second message"}]},
+            reddit_client:get_sent_messages(Client, "alice")
+        )
+    end).
+
+get_conversation_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+
+        reddit_client:send_message(
+            Client, "alice", "bob", "Hello"
+        ),
+        reddit_client:send_message(
+            Client, "bob", "alice", "Hi"
+        ),
+
+        ?assertMatch(
+            {ok, [#{sender := "alice"},
+                  #{sender := "bob"}]},
+            reddit_client:get_conversation(
+                Client, "alice", "bob"
+            )
+        )
+    end).
+
+reply_to_message_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+
+        {ok, MessageId} = reddit_client:send_message(
+            Client, "alice", "bob", "Are you available?"
+        ),
+
+        ?assertEqual(
+            {ok, 2},
+            reddit_client:reply_to_message(
+                Client, "bob", MessageId, "Yes, I am."
+            )
+        ),
+
+        ?assertMatch(
+            {ok, [
+                #{id := 1, sender := "alice"},
+                #{id := 2, sender := "bob",
+                  recipient := "alice", parent_id := 1}
+            ]},
+            reddit_client:get_conversation(
+                Client, "alice", "bob"
+            )
+        )
+    end).
+
+reply_to_reply_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+
+        {ok, FirstId} = reddit_client:send_message(
+            Client, "alice", "bob", "First"
+        ),
+
+        {ok, SecondId} = reddit_client:reply_to_message(
+            Client, "bob", FirstId, "Second"
+        ),
+
+        ?assertEqual(
+            {ok, 3},
+            reddit_client:reply_to_message(
+                Client, "alice", SecondId, "Third"
+            )
+        ),
+
+        ?assertMatch(
+            {ok, [
+                #{id := 1, parent_id := none},
+                #{id := 2, parent_id := 1},
+                #{id := 3, parent_id := 2}
+            ]},
+            reddit_client:get_conversation(
+                Client, "alice", "bob"
+            )
+        )
+    end).
+
+unauthorized_message_reply_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+        reddit_client:register(Client, "charlie"),
+
+        {ok, MessageId} = reddit_client:send_message(
+            Client, "alice", "bob", "Private message"
+        ),
+
+        ?assertEqual(
+            {error, not_conversation_participant},
+            reddit_client:reply_to_message(
+                Client, "charlie", MessageId, "Unauthorized reply"
+            )
+        )
+    end).
+
+empty_direct_message_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+        reddit_client:register(Client, "bob"),
+
+        ?assertEqual(
+            {error, empty_content},
+            reddit_client:send_message(
+                Client, "alice", "bob", "   "
+            )
+        )
+    end).
+
+message_unknown_recipient_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        reddit_client:register(Client, "alice"),
+
+        ?assertEqual(
+            {error, recipient_not_found},
+            reddit_client:send_message(
+                Client, "alice", "unknown", "Hello"
+            )
+        )
+    end).
+%% Milestone 7: full simulator workload
+
+full_simulator_workload_test() ->
+    Summary = reddit_simulator:run_workload(
+        12, #{subreddits => 3}
+    ),
+    ?assertEqual(12, maps:get(requested_users, Summary)),
+    ?assertEqual({ok, 12}, maps:get(engine_account_count, Summary)),
+
+    Stats = maps:get(operation_stats, Summary),
+
+    ?assertEqual(12, maps:get(successful, maps:get(registration, Stats))),
+    ?assertEqual(3, maps:get(successful, maps:get(subreddit_creation, Stats))),
+    ?assertEqual(33, maps:get(successful, maps:get(subreddit_membership, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(post_creation, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(comment_creation, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(post_voting, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(feed_retrieval, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(direct_messages, Stats))),
+    ?assertEqual(12, maps:get(successful, maps:get(message_replies, Stats))),
+    ?assertEqual(0, maps:get(failed_operations, Summary)).
+
 
 
 %% Test helpers
