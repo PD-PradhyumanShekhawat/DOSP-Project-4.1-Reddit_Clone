@@ -1,4 +1,3 @@
-
 -module(reddit_engine).
 
 -export([
@@ -18,7 +17,12 @@
     vote_comment/4,
     get_post_score/2,
     get_comment_score/2,
-    get_karma/2
+    get_karma/2,
+    send_message/4,
+    get_inbox/2,
+    get_sent_messages/2,
+    get_conversation/3,
+    reply_to_message/4
 ]).
 
 %% Engine lifecycle
@@ -32,7 +36,9 @@ start_link() ->
             next_post_id => 1,
             comments => [],
             next_comment_id => 1,
-            votes => #{}
+            votes => #{},
+            messages => [],
+            next_message_id => 1
         })
     end).
 
@@ -86,6 +92,24 @@ get_comment_score(EnginePid, CommentId) ->
 
 get_karma(EnginePid, Username) ->
     request(EnginePid, {get_karma, Username}).
+
+send_message(EnginePid, Sender, Recipient, Content) ->
+    request(EnginePid, {send_message, Sender, Recipient, Content}).
+
+get_inbox(EnginePid, Username) ->
+    request(EnginePid, {get_inbox, Username}).
+
+get_sent_messages(EnginePid, Username) ->
+    request(EnginePid, {get_sent_messages, Username}).
+
+get_conversation(EnginePid, Username, OtherUsername) ->
+    request(EnginePid, {get_conversation, Username, OtherUsername}).
+
+reply_to_message(EnginePid, Sender, ParentMessageId, Content) ->
+    request(
+        EnginePid,
+        {reply_to_message, Sender, ParentMessageId, Content}
+    ).
 
 request(EnginePid, Request) ->
     Ref = make_ref(),
@@ -172,6 +196,34 @@ loop(State) ->
         {request, From, Ref, {get_karma, Username}} ->
             Result = account_karma(Username, State),
             reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref,
+         {send_message, Sender, Recipient, Content}} ->
+            {Result, NewState} =
+                send_message_state(Sender, Recipient, Content, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {get_inbox, Username}} ->
+            Result = get_user_messages(inbox, Username, State),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref, {get_sent_messages, Username}} ->
+            Result = get_user_messages(sent, Username, State),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref,
+         {get_conversation, Username, OtherUsername}} ->
+            Result = get_conversation_state(
+                Username, OtherUsername, State
+            ),
+            reply_and_continue(From, Ref, Result, State);
+
+        {request, From, Ref,
+         {reply_to_message, Sender, ParentMessageId, Content}} ->
+            {Result, NewState} = reply_to_message_state(
+                Sender, ParentMessageId, Content, State
+            ),
+            reply_and_continue(From, Ref, Result, NewState);
 
         stop ->
             ok;
@@ -592,6 +644,146 @@ account_karma(Username, State) ->
 score_value(Type, TargetId, State) ->
     {Upvotes, Downvotes} = count_votes(Type, TargetId, State),
     Upvotes - Downvotes.
+
+%% Direct messages and threaded replies
+
+send_message_state(Sender, Recipient, Content, State) ->
+    Accounts = maps:get(accounts, State),
+    case {maps:is_key(Sender, Accounts),
+          maps:is_key(Recipient, Accounts)} of
+        {false, _} ->
+            {{error, sender_not_found}, State};
+        {true, false} ->
+            {{error, recipient_not_found}, State};
+        {true, true} when Sender =:= Recipient ->
+            {{error, cannot_message_self}, State};
+        {true, true} ->
+            case validate_content(Content) of
+                {error, Reason} ->
+                    {{error, Reason}, State};
+                ok ->
+                    store_message(Sender, Recipient, none, Content, State)
+            end
+    end.
+
+store_message(Sender, Recipient, ParentId, Content, State) ->
+    MessageId = maps:get(next_message_id, State),
+    Message = #{
+        id => MessageId,
+        sender => Sender,
+        recipient => Recipient,
+        content => Content,
+        parent_id => ParentId,
+        timestamp => erlang:system_time(millisecond)
+    },
+    NewState = State#{
+        messages := [Message | maps:get(messages, State)],
+        next_message_id := MessageId + 1
+    },
+    {{ok, MessageId}, NewState}.
+
+get_user_messages(Type, Username, State) ->
+    Accounts = maps:get(accounts, State),
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {error, account_not_found};
+        true ->
+            Messages = maps:get(messages, State),
+            Selected = [
+                Message
+                || Message <- Messages,
+                   message_matches_user(Type, Username, Message)
+            ],
+            {ok, sort_messages(Selected)}
+    end.
+
+message_matches_user(inbox, Username, Message) ->
+    maps:get(recipient, Message) =:= Username;
+message_matches_user(sent, Username, Message) ->
+    maps:get(sender, Message) =:= Username.
+
+get_conversation_state(Username, OtherUsername, State) ->
+    Accounts = maps:get(accounts, State),
+    case {maps:is_key(Username, Accounts),
+          maps:is_key(OtherUsername, Accounts)} of
+        {false, _} ->
+            {error, account_not_found};
+        {true, false} ->
+            {error, account_not_found};
+        {true, true} when Username =:= OtherUsername ->
+            {error, invalid_conversation};
+        {true, true} ->
+            Messages = maps:get(messages, State),
+            Conversation = [
+                Message
+                || Message <- Messages,
+                   conversation_message(
+                       Username, OtherUsername, Message
+                   )
+            ],
+            {ok, sort_messages(Conversation)}
+    end.
+
+conversation_message(User1, User2, Message) ->
+    Sender = maps:get(sender, Message),
+    Recipient = maps:get(recipient, Message),
+    (Sender =:= User1 andalso Recipient =:= User2) orelse
+    (Sender =:= User2 andalso Recipient =:= User1).
+
+reply_to_message_state(Sender, ParentMessageId, Content, State) ->
+    Accounts = maps:get(accounts, State),
+    case maps:is_key(Sender, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+        true ->
+            case find_message(ParentMessageId, maps:get(messages, State)) of
+                error ->
+                    {{error, message_not_found}, State};
+                {ok, Parent} ->
+                    ParentSender = maps:get(sender, Parent),
+                    ParentRecipient = maps:get(recipient, Parent),
+                    case reply_recipient(
+                        Sender, ParentSender, ParentRecipient
+                    ) of
+                        error ->
+                            {{error, not_conversation_participant}, State};
+                        {ok, Recipient} ->
+                            case validate_content(Content) of
+                                {error, Reason} ->
+                                    {{error, Reason}, State};
+                                ok ->
+                                    store_message(
+                                        Sender, Recipient, ParentMessageId,
+                                        Content, State
+                                    )
+                            end
+                    end
+            end
+    end.
+
+reply_recipient(Sender, OriginalSender, OriginalRecipient)
+        when Sender =:= OriginalSender ->
+    {ok, OriginalRecipient};
+reply_recipient(Sender, OriginalSender, OriginalRecipient)
+        when Sender =:= OriginalRecipient ->
+    {ok, OriginalSender};
+reply_recipient(_Sender, _OriginalSender, _OriginalRecipient) ->
+    error.
+
+find_message(MessageId, Messages) ->
+    case lists:search(
+        fun(Message) -> maps:get(id, Message) =:= MessageId end,
+        Messages
+    ) of
+        false -> error;
+        {value, Message} -> {ok, Message}
+    end.
+
+sort_messages(Messages) ->
+    lists:sort(
+        fun(A, B) -> maps:get(id, A) < maps:get(id, B) end,
+        Messages
+    ).
 
 %% Lookup helpers
 
