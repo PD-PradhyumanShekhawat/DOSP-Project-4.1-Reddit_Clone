@@ -34,6 +34,21 @@
 - EUnit tests for post creation and feed behavior
 
 
+### Milestone 4 — Hierarchical Comments and Replies
+
+- Add comments to existing posts
+- Reply to existing comments
+- Support multiple levels of nested replies
+- Assign unique comment IDs
+- Store comment author, content, post ID, parent comment ID, and timestamp
+- Retrieve comments as a hierarchical tree
+- Validate that parent comments belong to the same post
+- Restrict commenting to subreddit members
+- Reject comments on nonexistent posts
+- Reject empty comments
+- EUnit tests for nested comment behavior
+
+
 ## Current Architecture
 
 The central engine owns account and subreddit state.
