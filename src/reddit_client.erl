@@ -1,4 +1,3 @@
-
 -module(reddit_client).
 
 -export([
@@ -17,7 +16,12 @@
     vote_comment/4,
     get_post_score/2,
     get_comment_score/2,
-    get_karma/2
+    get_karma/2,
+    send_message/4,
+    get_inbox/2,
+    get_sent_messages/2,
+    get_conversation/3,
+    reply_to_message/4
 ]).
 
 start_link(EnginePid) when is_pid(EnginePid) ->
@@ -71,6 +75,24 @@ get_comment_score(ClientPid, CommentId) ->
 
 get_karma(ClientPid, Username) ->
     call(ClientPid, {get_karma, Username}).
+
+send_message(ClientPid, Sender, Recipient, Content) ->
+    call(ClientPid, {send_message, Sender, Recipient, Content}).
+
+get_inbox(ClientPid, Username) ->
+    call(ClientPid, {get_inbox, Username}).
+
+get_sent_messages(ClientPid, Username) ->
+    call(ClientPid, {get_sent_messages, Username}).
+
+get_conversation(ClientPid, Username, OtherUsername) ->
+    call(ClientPid, {get_conversation, Username, OtherUsername}).
+
+reply_to_message(ClientPid, Sender, ParentMessageId, Content) ->
+    call(
+        ClientPid,
+        {reply_to_message, Sender, ParentMessageId, Content}
+    ).
 
 call(ClientPid, Request) ->
     Ref = make_ref(),
