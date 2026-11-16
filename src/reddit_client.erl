@@ -12,7 +12,12 @@
     create_post/4,
     get_feed/2,
     add_comment/5,
-    get_post_comments/2
+    get_post_comments/2,
+    vote_post/4,
+    vote_comment/4,
+    get_post_score/2,
+    get_comment_score/2,
+    get_karma/2
 ]).
 
 start_link(EnginePid) when is_pid(EnginePid) ->
@@ -25,37 +30,51 @@ stop(ClientPid) when is_pid(ClientPid) ->
 register(ClientPid, Username) ->
     call(ClientPid, {register, Username}).
 
-create_subreddit(ClientPid, Username, SubredditName) ->
-    call(ClientPid, {create_subreddit, Username, SubredditName}).
+create_subreddit(ClientPid, Username, Name) ->
+    call(ClientPid, {create_subreddit, Username, Name}).
 
-join_subreddit(ClientPid, Username, SubredditName) ->
-    call(ClientPid, {join_subreddit, Username, SubredditName}).
+join_subreddit(ClientPid, Username, Name) ->
+    call(ClientPid, {join_subreddit, Username, Name}).
 
-leave_subreddit(ClientPid, Username, SubredditName) ->
-    call(ClientPid, {leave_subreddit, Username, SubredditName}).
+leave_subreddit(ClientPid, Username, Name) ->
+    call(ClientPid, {leave_subreddit, Username, Name}).
 
-subreddit_info(ClientPid, SubredditName) ->
-    call(ClientPid, {subreddit_info, SubredditName}).
+subreddit_info(ClientPid, Name) ->
+    call(ClientPid, {subreddit_info, Name}).
 
-create_post(ClientPid, Username, SubredditName, Content) ->
-    call(ClientPid, {create_post, Username, SubredditName, Content}).
+create_post(ClientPid, Username, Name, Content) ->
+    call(ClientPid, {create_post, Username, Name, Content}).
 
 get_feed(ClientPid, Username) ->
     call(ClientPid, {get_feed, Username}).
 
-add_comment(ClientPid, Username, PostId, ParentCommentId, Content) ->
+add_comment(ClientPid, Username, PostId, ParentId, Content) ->
     call(
         ClientPid,
-        {add_comment, Username, PostId, ParentCommentId, Content}
+        {add_comment, Username, PostId, ParentId, Content}
     ).
 
 get_post_comments(ClientPid, PostId) ->
     call(ClientPid, {get_post_comments, PostId}).
 
+vote_post(ClientPid, Username, PostId, Vote) ->
+    call(ClientPid, {vote_post, Username, PostId, Vote}).
+
+vote_comment(ClientPid, Username, CommentId, Vote) ->
+    call(ClientPid, {vote_comment, Username, CommentId, Vote}).
+
+get_post_score(ClientPid, PostId) ->
+    call(ClientPid, {get_post_score, PostId}).
+
+get_comment_score(ClientPid, CommentId) ->
+    call(ClientPid, {get_comment_score, CommentId}).
+
+get_karma(ClientPid, Username) ->
+    call(ClientPid, {get_karma, Username}).
+
 call(ClientPid, Request) ->
     Ref = make_ref(),
     ClientPid ! {call, self(), Ref, Request},
-
     receive
         {client_reply, Ref, Result} ->
             Result
@@ -68,7 +87,6 @@ loop(EnginePid) ->
         {call, From, Ref, Request} ->
             EngineRef = make_ref(),
             EnginePid ! {request, self(), EngineRef, Request},
-
             receive
                 {reply, EngineRef, Result} ->
                     From ! {client_reply, Ref, Result},
