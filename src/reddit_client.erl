@@ -8,7 +8,9 @@
     create_subreddit/3,
     join_subreddit/3,
     leave_subreddit/3,
-    subreddit_info/2
+    subreddit_info/2,
+    create_post/4,
+    get_feed/2
 ]).
 
 start_link(EnginePid) when is_pid(EnginePid) ->
@@ -32,6 +34,12 @@ leave_subreddit(ClientPid, Username, SubredditName) ->
 
 subreddit_info(ClientPid, SubredditName) ->
     call(ClientPid, {subreddit_info, SubredditName}).
+
+create_post(ClientPid, Username, SubredditName, Content) ->
+    call(ClientPid, {create_post, Username, SubredditName, Content}).
+
+get_feed(ClientPid, Username) ->
+    call(ClientPid, {get_feed, Username}).
 
 call(ClientPid, Request) ->
     Ref = make_ref(),
