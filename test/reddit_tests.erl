@@ -330,6 +330,191 @@ unknown_user_feed_test() ->
         )
     end).
 
+
+%% Milestone 4: hierarchical comments and replies
+
+create_top_level_comment_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Learning Erlang"
+        ),
+
+        ?assertEqual(
+            {ok, 1},
+            reddit_client:add_comment(
+                Client, "alice", PostId, none, "This is a comment"
+            )
+        ),
+
+        {ok, Comments} = reddit_client:get_post_comments(Client, PostId),
+        ?assertEqual(1, length(Comments)),
+
+        [Comment] = Comments,
+        ?assertEqual("alice", maps:get(author, Comment)),
+        ?assertEqual("This is a comment", maps:get(content, Comment)),
+        ?assertEqual([], maps:get(replies, Comment))
+    end).
+
+reply_to_comment_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Learning Erlang"
+        ),
+
+        {ok, ParentId} = reddit_client:add_comment(
+            Client, "alice", PostId, none, "Parent comment"
+        ),
+
+        ?assertEqual(
+            {ok, 2},
+            reddit_client:add_comment(
+                Client, "bob", PostId, ParentId, "Reply to parent"
+            )
+        ),
+
+        {ok, [Parent]} = reddit_client:get_post_comments(Client, PostId),
+        [Reply] = maps:get(replies, Parent),
+
+        ?assertEqual("bob", maps:get(author, Reply)),
+        ?assertEqual("Reply to parent", maps:get(content, Reply))
+    end).
+
+nested_reply_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Learning Erlang"
+        ),
+
+        {ok, FirstId} = reddit_client:add_comment(
+            Client, "alice", PostId, none, "First level"
+        ),
+
+        {ok, SecondId} = reddit_client:add_comment(
+            Client, "bob", PostId, FirstId, "Second level"
+        ),
+
+        ?assertEqual(
+            {ok, 3},
+            reddit_client:add_comment(
+                Client, "alice", PostId, SecondId, "Third level"
+            )
+        ),
+
+        {ok, [First]} = reddit_client:get_post_comments(Client, PostId),
+        [Second] = maps:get(replies, First),
+        [Third] = maps:get(replies, Second),
+
+        ?assertEqual("First level", maps:get(content, First)),
+        ?assertEqual("Second level", maps:get(content, Second)),
+        ?assertEqual("Third level", maps:get(content, Third))
+    end).
+
+comment_wrong_post_parent_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+
+        {ok, Post1} = reddit_client:create_post(
+            Client, "alice", "erlang", "Post one"
+        ),
+        {ok, Post2} = reddit_client:create_post(
+            Client, "alice", "erlang", "Post two"
+        ),
+
+        {ok, CommentId} = reddit_client:add_comment(
+            Client, "alice", Post1, none, "Comment on post one"
+        ),
+
+        ?assertEqual(
+            {error, parent_comment_wrong_post},
+            reddit_client:add_comment(
+                Client, "alice", Post2, CommentId, "Invalid reply"
+            )
+        )
+    end).
+
+comment_missing_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+
+        ?assertEqual(
+            {error, post_not_found},
+            reddit_client:add_comment(
+                Client, "alice", 999, none, "Comment"
+            )
+        )
+    end).
+
+comment_missing_parent_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Post"
+        ),
+
+        ?assertEqual(
+            {error, parent_comment_not_found},
+            reddit_client:add_comment(
+                Client, "alice", PostId, 999, "Reply"
+            )
+        )
+    end).
+
+comment_nonmember_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Post"
+        ),
+
+        ?assertEqual(
+            {error, not_member},
+            reddit_client:add_comment(
+                Client, "bob", PostId, none, "Not allowed"
+            )
+        )
+    end).
+
+empty_comment_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, PostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Post"
+        ),
+
+        ?assertEqual(
+            {error, empty_content},
+            reddit_client:add_comment(
+                Client, "alice", PostId, none, ""
+            )
+        )
+    end).
+
+get_comments_for_missing_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual(
+            {error, post_not_found},
+            reddit_client:get_post_comments(Client, 999)
+        )
+    end).
+
+
 %% Test helpers
 
 with_engine_client(Fun) ->
