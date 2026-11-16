@@ -22,7 +22,10 @@ test: compile
 	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'case eunit:test(reddit_tests, [verbose]) of ok -> halt(0); _ -> halt(1) end.'
 
 simulate: compile
-	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'reddit_simulator:run(100), halt().'
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'reddit_simulator:run_workload(100), halt().'
+
+simulate-large: compile
+	$(ERL) -noshell -pa $(EBIN_DIR) -eval 'reddit_simulator:run_workload(1000), halt().'
 
 clean:
 	rm -rf $(EBIN_DIR) erl_crash.dump
