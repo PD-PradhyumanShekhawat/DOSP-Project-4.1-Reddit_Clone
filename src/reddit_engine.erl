@@ -11,7 +11,9 @@
     leave_subreddit/3,
     subreddit_info/2,
     create_post/4,
-    get_feed/2
+    get_feed/2,
+    add_comment/5,
+    get_post_comments/2
 ]).
 
 start_link() ->
@@ -20,7 +22,9 @@ start_link() ->
             accounts => #{},
             subreddits => #{},
             posts => [],
-            next_post_id => 1
+            next_post_id => 1,
+            comments => [],
+            next_comment_id => 1
         })
     end).
 
@@ -51,6 +55,15 @@ create_post(EnginePid, Username, SubredditName, Content) ->
 
 get_feed(EnginePid, Username) ->
     request(EnginePid, {get_feed, Username}).
+
+add_comment(EnginePid, Username, PostId, ParentCommentId, Content) ->
+    request(
+        EnginePid,
+        {add_comment, Username, PostId, ParentCommentId, Content}
+    ).
+
+get_post_comments(EnginePid, PostId) ->
+    request(EnginePid, {get_post_comments, PostId}).
 
 request(EnginePid, Request) ->
     Ref = make_ref(),
@@ -107,6 +120,18 @@ loop(State) ->
             Result = get_user_feed(Username, State),
             reply_and_continue(From, Ref, Result, State);
 
+        {request, From, Ref,
+         {add_comment, Username, PostId, ParentCommentId, Content}} ->
+            {Result, NewState} =
+                add_comment_state(
+                    Username, PostId, ParentCommentId, Content, State
+                ),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {get_post_comments, PostId}} ->
+            Result = get_post_comments_state(PostId, State),
+            reply_and_continue(From, Ref, Result, State);
+
         stop ->
             ok;
 
@@ -137,7 +162,7 @@ register_user(Username, State) ->
             {Error, State}
     end.
 
-%% Subreddit creation
+%% Subreddit management
 
 create_subreddit_state(Username, SubredditName, State) ->
     Accounts = maps:get(accounts, State),
@@ -146,10 +171,8 @@ create_subreddit_state(Username, SubredditName, State) ->
     case {maps:is_key(Username, Accounts), validate_name(SubredditName)} of
         {false, _} ->
             {{error, account_not_found}, State};
-
         {true, {error, Reason}} ->
             {{error, Reason}, State};
-
         {true, ok} ->
             case maps:is_key(SubredditName, Subreddits) of
                 true ->
@@ -166,8 +189,6 @@ create_subreddit_state(Username, SubredditName, State) ->
                      State#{subreddits := UpdatedSubreddits}}
             end
     end.
-
-%% Join a subreddit
 
 join_subreddit_state(Username, SubredditName, State) ->
     Accounts = maps:get(accounts, State),
@@ -201,8 +222,6 @@ join_subreddit_state(Username, SubredditName, State) ->
             end
     end.
 
-%% Leave a subreddit
-
 leave_subreddit_state(Username, SubredditName, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
@@ -235,8 +254,6 @@ leave_subreddit_state(Username, SubredditName, State) ->
             end
     end.
 
-%% Subreddit information
-
 get_subreddit_info(SubredditName, State) ->
     Subreddits = maps:get(subreddits, State),
 
@@ -253,7 +270,7 @@ get_subreddit_info(SubredditName, State) ->
             }}
     end.
 
-%% Create a text post
+%% Post creation
 
 create_post_state(Username, SubredditName, Content, State) ->
     Accounts = maps:get(accounts, State),
@@ -296,9 +313,6 @@ create_post_state(Username, SubredditName, Content, State) ->
             end
     end.
 
-%% Return posts from all subreddits the user has joined.
-%% Posts are stored newest first.
-
 get_user_feed(Username, State) ->
     Accounts = maps:get(accounts, State),
 
@@ -323,7 +337,138 @@ get_user_feed(Username, State) ->
             {ok, Feed}
     end.
 
-%% Validation helpers
+%% Comment creation and hierarchical replies
+
+add_comment_state(Username, PostId, ParentCommentId, Content, State) ->
+    Accounts = maps:get(accounts, State),
+    Posts = maps:get(posts, State),
+    Comments = maps:get(comments, State),
+
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+        true ->
+            case find_post(PostId, Posts) of
+                error ->
+                    {{error, post_not_found}, State};
+                {ok, Post} ->
+                    SubredditName = maps:get(subreddit, Post),
+                    Subreddits = maps:get(subreddits, State),
+                    Subreddit = maps:get(SubredditName, Subreddits),
+                    Members = maps:get(members, Subreddit),
+
+                    case maps:is_key(Username, Members) of
+                        false ->
+                            {{error, not_member}, State};
+                        true ->
+                            case validate_content(Content) of
+                                {error, Reason} ->
+                                    {{error, Reason}, State};
+                                ok ->
+                                    validate_and_store_comment(
+                                        Username,
+                                        PostId,
+                                        ParentCommentId,
+                                        Content,
+                                        Comments,
+                                        State
+                                    )
+                            end
+                    end
+            end
+    end.
+
+validate_and_store_comment(
+    Username, PostId, ParentCommentId, Content, Comments, State
+) ->
+    case validate_parent_comment(PostId, ParentCommentId, Comments) of
+        ok ->
+            CommentId = maps:get(next_comment_id, State),
+            Comment = #{
+                id => CommentId,
+                post_id => PostId,
+                parent_id => ParentCommentId,
+                author => Username,
+                content => Content,
+                timestamp => erlang:system_time(second)
+            },
+            UpdatedComments = [Comment | Comments],
+            NewState = State#{
+                comments := UpdatedComments,
+                next_comment_id := CommentId + 1
+            },
+            {{ok, CommentId}, NewState};
+        {error, Reason} ->
+            {{error, Reason}, State}
+    end.
+
+validate_parent_comment(_PostId, none, _Comments) ->
+    ok;
+validate_parent_comment(PostId, ParentCommentId, Comments)
+        when is_integer(ParentCommentId) ->
+    case find_comment(ParentCommentId, Comments) of
+        error ->
+            {error, parent_comment_not_found};
+        {ok, ParentComment} ->
+            case maps:get(post_id, ParentComment) =:= PostId of
+                true -> ok;
+                false -> {error, parent_comment_wrong_post}
+            end
+    end;
+validate_parent_comment(_PostId, _ParentCommentId, _Comments) ->
+    {error, invalid_parent_comment_id}.
+
+get_post_comments_state(PostId, State) ->
+    case find_post(PostId, maps:get(posts, State)) of
+        error ->
+            {error, post_not_found};
+        {ok, _Post} ->
+            Comments = maps:get(comments, State),
+            Tree = build_comment_tree(PostId, none, Comments),
+            {ok, Tree}
+    end.
+
+build_comment_tree(PostId, ParentId, Comments) ->
+    DirectComments = lists:sort(
+        fun(A, B) -> maps:get(id, A) < maps:get(id, B) end,
+        [
+            Comment
+            || Comment <- Comments,
+               maps:get(post_id, Comment) =:= PostId,
+               maps:get(parent_id, Comment) =:= ParentId
+        ]
+    ),
+
+    [
+        Comment#{
+            replies => build_comment_tree(
+                PostId,
+                maps:get(id, Comment),
+                Comments
+            )
+        }
+        || Comment <- DirectComments
+    ].
+
+find_post(PostId, Posts) ->
+    case lists:search(
+        fun(Post) -> maps:get(id, Post) =:= PostId end,
+        Posts
+    ) of
+        false -> error;
+        {value, Post} -> {ok, Post}
+    end.
+
+find_comment(CommentId, Comments) ->
+    case lists:search(
+        fun(Comment) -> maps:get(id, Comment) =:= CommentId end,
+        Comments
+    ) of
+        false -> error;
+        {value, Comment} -> {ok, Comment}
+    end.
+
+%% Validation
 
 validate_name(Name)
         when is_list(Name), length(Name) > 0 ->
@@ -331,14 +476,12 @@ validate_name(Name)
         [] -> {error, invalid_name};
         _ -> ok
     end;
-
 validate_name(Name)
         when is_binary(Name), byte_size(Name) > 0 ->
     case string:trim(Name) of
         <<>> -> {error, invalid_name};
         _ -> ok
     end;
-
 validate_name(_) ->
     {error, invalid_name}.
 
@@ -348,13 +491,11 @@ validate_content(Content)
         [] -> {error, empty_content};
         _ -> ok
     end;
-
 validate_content(Content)
         when is_binary(Content), byte_size(Content) > 0 ->
     case string:trim(Content) of
         <<>> -> {error, empty_content};
         _ -> ok
     end;
-
 validate_content(_) ->
     {error, empty_content}.
