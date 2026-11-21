@@ -9,6 +9,8 @@
     leave_subreddit/3,
     subreddit_info/2,
     create_post/4,
+    repost/3,
+    get_user_reposts/2,
     get_feed/2,
     add_comment/5,
     get_post_comments/2,
@@ -48,6 +50,12 @@ subreddit_info(ClientPid, Name) ->
 
 create_post(ClientPid, Username, Name, Content) ->
     call(ClientPid, {create_post, Username, Name, Content}).
+
+repost(ClientPid, Username, PostId) ->
+    call(ClientPid, {repost, Username, PostId}).
+
+get_user_reposts(ClientPid, Username) ->
+    call(ClientPid, {get_user_reposts, Username}).
 
 get_feed(ClientPid, Username) ->
     call(ClientPid, {get_feed, Username}).
