@@ -10,6 +10,8 @@
     leave_subreddit/3,
     subreddit_info/2,
     create_post/4,
+    repost/3,
+    get_user_reposts/2,
     get_feed/2,
     add_comment/5,
     get_post_comments/2,
@@ -68,6 +70,12 @@ subreddit_info(EnginePid, Name) ->
 
 create_post(EnginePid, Username, Subreddit, Content) ->
     request(EnginePid, {create_post, Username, Subreddit, Content}).
+
+repost(EnginePid, Username, PostId) ->
+    request(EnginePid, {repost, Username, PostId}).
+
+get_user_reposts(EnginePid, Username) ->
+    request(EnginePid, {get_user_reposts, Username}).
 
 get_feed(EnginePid, Username) ->
     request(EnginePid, {get_feed, Username}).
@@ -158,6 +166,14 @@ loop(State) ->
             {Result, NewState} =
                 create_post_state(Username, Name, Content, State),
             reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {repost, Username, PostId}} ->
+            {Result, NewState} = repost_state(Username, PostId, State),
+            reply_and_continue(From, Ref, Result, NewState);
+
+        {request, From, Ref, {get_user_reposts, Username}} ->
+            Result = get_user_reposts_state(Username, State),
+            reply_and_continue(From, Ref, Result, State);
 
         {request, From, Ref, {get_feed, Username}} ->
             Result = get_user_feed(Username, State),
@@ -284,6 +300,8 @@ create_subreddit_state(Username, Name, State) ->
             end
     end.
 
+%% Continue: subreddit management
+
 join_subreddit_state(Username, Name, State) ->
     Accounts = maps:get(accounts, State),
     Subreddits = maps:get(subreddits, State),
@@ -402,6 +420,84 @@ create_post_state(Username, Name, Content, State) ->
                             end
                     end
             end
+    end.
+
+%% Reposting
+%% A repost is represented as a new post authored by the reposter.
+%% It retains the original post ID and author for attribution. Because it
+%% is stored in the normal posts collection, feeds, comments, voting, and
+%% karma continue to use the existing post mechanisms.
+
+repost_state(Username, PostId, State) ->
+    Accounts = maps:get(accounts, State),
+    Posts = maps:get(posts, State),
+
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {{error, account_not_found}, State};
+        true ->
+            case find_post(PostId, Posts) of
+                error ->
+                    {{error, post_not_found}, State};
+                {ok, OriginalPost} ->
+                    SubredditName = maps:get(subreddit, OriginalPost),
+                    Subreddits = maps:get(subreddits, State),
+                    Subreddit = maps:get(SubredditName, Subreddits),
+                    Members = maps:get(members, Subreddit),
+
+                    case maps:is_key(Username, Members) of
+                        false ->
+                            {{error, not_member}, State};
+                        true ->
+                            AlreadyReposted = lists:any(
+                                fun(Post) ->
+                                    maps:get(is_repost, Post, false)
+                                        andalso maps:get(author, Post)
+                                            =:= Username
+                                        andalso maps:get(original_post_id, Post)
+                                            =:= PostId
+                                end,
+                                Posts
+                            ),
+
+                            case AlreadyReposted of
+                                true ->
+                                    {{error, already_reposted}, State};
+                                false ->
+                                    RepostId = maps:get(next_post_id, State),
+                                    Repost = #{
+                                        id => RepostId,
+                                        author => Username,
+                                        subreddit => SubredditName,
+                                        content => maps:get(content, OriginalPost),
+                                        timestamp => erlang:system_time(second),
+                                        is_repost => true,
+                                        original_post_id => PostId,
+                                        original_author => maps:get(author, OriginalPost)
+                                    },
+                                    NewState = State#{
+                                        posts := [Repost | Posts],
+                                        next_post_id := RepostId + 1
+                                    },
+                                    {{ok, RepostId}, NewState}
+                            end
+                    end
+            end
+    end.
+
+get_user_reposts_state(Username, State) ->
+    Accounts = maps:get(accounts, State),
+    case maps:is_key(Username, Accounts) of
+        false ->
+            {error, account_not_found};
+        true ->
+            Reposts = [
+                Post
+                || Post <- maps:get(posts, State),
+                   maps:get(is_repost, Post, false),
+                   maps:get(author, Post) =:= Username
+            ],
+            {ok, lists:reverse(Reposts)}
     end.
 
 get_user_feed(Username, State) ->
