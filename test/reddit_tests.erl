@@ -857,27 +857,230 @@ message_unknown_recipient_test() ->
             )
         )
     end).
+
+%% Milestone 9: reposts
+
+repost_creates_feed_entry_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+
+        {ok, OriginalPostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Original post"
+        ),
+        {ok, RepostId} = reddit_client:repost(
+            Client, "bob", OriginalPostId
+        ),
+
+        ?assertNotEqual(OriginalPostId, RepostId),
+
+        {ok, Feed} = reddit_client:get_feed(Client, "bob"),
+        [Repost, Original] = Feed,
+
+        ?assertEqual(RepostId, maps:get(id, Repost)),
+        ?assertEqual("bob", maps:get(author, Repost)),
+        ?assertEqual("erlang", maps:get(subreddit, Repost)),
+        ?assertEqual("Original post", maps:get(content, Repost)),
+        ?assertEqual(true, maps:get(is_repost, Repost)),
+        ?assertEqual(OriginalPostId, maps:get(original_post_id, Repost)),
+        ?assertEqual("alice", maps:get(original_author, Repost)),
+
+        ?assertEqual(OriginalPostId, maps:get(id, Original)),
+        ?assertEqual("alice", maps:get(author, Original))
+    end).
+
+get_user_reposts_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+
+        {ok, OriginalPostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Original post"
+        ),
+        {ok, RepostId} = reddit_client:repost(
+            Client, "bob", OriginalPostId
+        ),
+
+        {ok, Reposts} = reddit_client:get_user_reposts(Client, "bob"),
+        ?assertEqual(1, length(Reposts)),
+        [Repost] = Reposts,
+        ?assertEqual(RepostId, maps:get(id, Repost)),
+        ?assertEqual(OriginalPostId, maps:get(original_post_id, Repost))
+    end).
+
+duplicate_repost_rejected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:join_subreddit(Client, "bob", "erlang"),
+        {ok, OriginalPostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Original post"
+        ),
+
+        {ok, _RepostId} = reddit_client:repost(
+            Client, "bob", OriginalPostId
+        ),
+        ?assertEqual(
+            {error, already_reposted},
+            reddit_client:repost(Client, "bob", OriginalPostId)
+        ),
+
+        {ok, Reposts} = reddit_client:get_user_reposts(Client, "bob"),
+        ?assertEqual(1, length(Reposts))
+    end).
+
+repost_missing_post_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        ?assertEqual(
+            {error, post_not_found},
+            reddit_client:repost(Client, "alice", 999)
+        )
+    end).
+
+repost_nonmember_rejected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        register_user(Client, "bob"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, OriginalPostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Original post"
+        ),
+
+        ?assertEqual(
+            {error, not_member},
+            reddit_client:repost(Client, "bob", OriginalPostId)
+        )
+    end).
+
+repost_unknown_user_rejected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        {ok, OriginalPostId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Original post"
+        ),
+
+        ?assertEqual(
+            {error, account_not_found},
+            reddit_client:repost(Client, "unknown", OriginalPostId)
+        ),
+        ?assertEqual(
+            {error, account_not_found},
+            reddit_client:get_user_reposts(Client, "unknown")
+        )
+    end).
+
 %% Milestone 7: full simulator workload
 
 full_simulator_workload_test() ->
     Summary = reddit_simulator:run_workload(
         12, #{subreddits => 3}
     ),
-    ?assertEqual(12, maps:get(requested_users, Summary)),
-    ?assertEqual({ok, 12}, maps:get(engine_account_count, Summary)),
+
+    ?assertEqual(
+        12,
+        maps:get(requested_users, Summary)
+    ),
+
+    ?assertEqual(
+        {ok, 12},
+        maps:get(engine_account_count, Summary)
+    ),
 
     Stats = maps:get(operation_stats, Summary),
 
-    ?assertEqual(12, maps:get(successful, maps:get(registration, Stats))),
-    ?assertEqual(3, maps:get(successful, maps:get(subreddit_creation, Stats))),
-    ?assertEqual(33, maps:get(successful, maps:get(subreddit_membership, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(post_creation, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(comment_creation, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(post_voting, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(feed_retrieval, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(direct_messages, Stats))),
-    ?assertEqual(12, maps:get(successful, maps:get(message_replies, Stats))),
-    ?assertEqual(0, maps:get(failed_operations, Summary)).
+    %% Registration
+    RegistrationStats = maps:get(registration, Stats),
+    ?assertEqual(12, maps:get(attempted, RegistrationStats)),
+    ?assertEqual(12, maps:get(successful, RegistrationStats)),
+    ?assertEqual(0, maps:get(failed, RegistrationStats)),
+
+    %% Subreddit creation
+    SubredditStats = maps:get(subreddit_creation, Stats),
+    ?assertEqual(3, maps:get(attempted, SubredditStats)),
+    ?assertEqual(3, maps:get(successful, SubredditStats)),
+    ?assertEqual(0, maps:get(failed, SubredditStats)),
+
+    %% Subreddit membership
+    MembershipStats = maps:get(subreddit_membership, Stats),
+    ?assertEqual(11, maps:get(attempted, MembershipStats)),
+    ?assertEqual(11, maps:get(successful, MembershipStats)),
+    ?assertEqual(0, maps:get(failed, MembershipStats)),
+
+    %% Post creation
+    %% The number of posts is determined by the popularity plan.
+    PostPlan = maps:get(author_post_plan, Summary),
+
+    ExpectedPosts = lists:sum([
+        maps:get(posts, Plan)
+        || Plan <- maps:values(PostPlan)
+    ]),
+
+    PostStats = maps:get(post_creation, Stats),
+
+    ?assertEqual(
+        ExpectedPosts,
+        maps:get(attempted, PostStats)
+    ),
+
+    ?assertEqual(
+        ExpectedPosts,
+        maps:get(successful, PostStats)
+    ),
+
+    ?assertEqual(
+        0,
+        maps:get(failed, PostStats)
+    ),
+
+        %% Repost creation
+    RepostStats = maps:get(repost_creation, Stats),
+    ?assertEqual(12, maps:get(attempted, RepostStats)),
+    ?assertEqual(12, maps:get(successful, RepostStats)),
+    ?assertEqual(0, maps:get(failed, RepostStats)),
+    
+    %% Comment creation
+    CommentStats = maps:get(comment_creation, Stats),
+    ?assertEqual(12, maps:get(attempted, CommentStats)),
+    ?assertEqual(12, maps:get(successful, CommentStats)),
+    ?assertEqual(0, maps:get(failed, CommentStats)),
+
+    %% Post voting
+    VotingStats = maps:get(post_voting, Stats),
+    ?assertEqual(12, maps:get(attempted, VotingStats)),
+    ?assertEqual(12, maps:get(successful, VotingStats)),
+    ?assertEqual(0, maps:get(failed, VotingStats)),
+
+    %% Feed retrieval
+    FeedStats = maps:get(feed_retrieval, Stats),
+    ?assertEqual(12, maps:get(attempted, FeedStats)),
+    ?assertEqual(12, maps:get(successful, FeedStats)),
+    ?assertEqual(0, maps:get(failed, FeedStats)),
+
+    %% Direct messages
+    MessageStats = maps:get(direct_messages, Stats),
+    ?assertEqual(12, maps:get(attempted, MessageStats)),
+    ?assertEqual(12, maps:get(successful, MessageStats)),
+    ?assertEqual(0, maps:get(failed, MessageStats)),
+
+    %% Message replies
+    ReplyStats = maps:get(message_replies, Stats),
+    ?assertEqual(12, maps:get(attempted, ReplyStats)),
+    ?assertEqual(12, maps:get(successful, ReplyStats)),
+    ?assertEqual(0, maps:get(failed, ReplyStats)),
+
+    %% Overall workload
+    ?assertEqual(
+        0,
+        maps:get(failed_operations, Summary)
+    ).
 
 
 
