@@ -3,6 +3,9 @@
 -export([
     start_link/1,
     stop/1,
+    connect/1,
+    disconnect/1,
+    is_connected/1,
     register/2,
     create_subreddit/3,
     join_subreddit/3,
@@ -27,11 +30,22 @@
 ]).
 
 start_link(EnginePid) when is_pid(EnginePid) ->
-    spawn_link(fun() -> loop(EnginePid) end).
+    spawn_link(fun() -> loop(EnginePid, true) end).
 
 stop(ClientPid) when is_pid(ClientPid) ->
     ClientPid ! stop,
     ok.
+
+%% A client remains alive while offline. Its account and engine-side data
+%% are not removed when the client disconnects.
+connect(ClientPid) ->
+    call(ClientPid, connect).
+
+disconnect(ClientPid) ->
+    call(ClientPid, disconnect).
+
+is_connected(ClientPid) ->
+    call(ClientPid, connection_status).
 
 register(ClientPid, Username) ->
     call(ClientPid, {register, Username}).
@@ -112,23 +126,47 @@ call(ClientPid, Request) ->
         {error, timeout}
     end.
 
-loop(EnginePid) ->
+loop(EnginePid, Connected) ->
     receive
+        {call, From, Ref, connect} ->
+            Result = case Connected of
+                true -> {ok, already_connected};
+                false -> {ok, connected}
+            end,
+            From ! {client_reply, Ref, Result},
+            loop(EnginePid, true);
+
+        {call, From, Ref, disconnect} ->
+            Result = case Connected of
+                true -> {ok, disconnected};
+                false -> {ok, already_disconnected}
+            end,
+            From ! {client_reply, Ref, Result},
+            loop(EnginePid, false);
+
+        {call, From, Ref, connection_status} ->
+            From ! {client_reply, Ref, {ok, Connected}},
+            loop(EnginePid, Connected);
+
+        {call, From, Ref, _Request} when Connected =:= false ->
+            From ! {client_reply, Ref, {error, offline}},
+            loop(EnginePid, false);
+
         {call, From, Ref, Request} ->
             EngineRef = make_ref(),
             EnginePid ! {request, self(), EngineRef, Request},
             receive
                 {reply, EngineRef, Result} ->
                     From ! {client_reply, Ref, Result},
-                    loop(EnginePid)
+                    loop(EnginePid, Connected)
             after 5500 ->
                 From ! {client_reply, Ref, {error, engine_timeout}},
-                loop(EnginePid)
+                loop(EnginePid, Connected)
             end;
 
         stop ->
             ok;
 
         _UnexpectedMessage ->
-            loop(EnginePid)
+            loop(EnginePid, Connected)
     end.
