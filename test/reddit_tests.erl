@@ -85,6 +85,63 @@ simulator_test() ->
     ?assertEqual(0, maps:get(failed_registrations, Summary)),
     ?assertEqual({ok, 25}, maps:get(engine_account_count, Summary)).
 
+%% Client online/offline lifecycle tests
+
+client_starts_connected_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual({ok, true}, reddit_client:is_connected(Client))
+    end).
+
+client_disconnect_rejects_operations_test() ->
+    with_engine_client(fun(Engine, Client) ->
+        register_user(Client, "alice"),
+        ?assertEqual({ok, disconnected}, reddit_client:disconnect(Client)),
+        ?assertEqual({ok, false}, reddit_client:is_connected(Client)),
+        ?assertEqual({error, offline}, reddit_client:get_feed(Client, "alice")),
+        ?assertEqual({ok, 1}, reddit_engine:account_count(Engine))
+    end).
+
+client_reconnect_restores_operations_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:disconnect(Client),
+        ?assertEqual({ok, connected}, reddit_client:connect(Client)),
+        ?assertEqual({ok, true}, reddit_client:is_connected(Client)),
+        ?assertMatch({ok, _}, reddit_client:get_feed(Client, "alice"))
+    end).
+
+client_repeated_connection_transitions_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        ?assertEqual({ok, already_connected}, reddit_client:connect(Client)),
+        ?assertEqual({ok, disconnected}, reddit_client:disconnect(Client)),
+        ?assertEqual({ok, already_disconnected}, reddit_client:disconnect(Client)),
+        ?assertEqual({ok, connected}, reddit_client:connect(Client)),
+        ?assertEqual({ok, true}, reddit_client:is_connected(Client))
+    end).
+
+lifecycle_simulator_test() ->
+    Summary = reddit_simulator:run_lifecycle(3, #{
+        duration_ms => 180,
+        online_ms => 30,
+        offline_ms => 30,
+        operation_interval_ms => 5
+    }),
+    ?assertEqual(3, maps:get(requested_users, Summary)),
+    ?assertEqual({ok, 3}, maps:get(engine_account_count, Summary)),
+    ?assert(maps:get(connection_attempts, Summary) > 0),
+    ?assert(maps:get(successful_connections, Summary) > 0),
+    ?assert(maps:get(disconnections, Summary) > 0),
+    ?assert(maps:get(online_time_ms, Summary) > 0),
+    ?assert(maps:get(offline_time_ms, Summary) > 0),
+    ?assert(maps:get(successful, Summary) > 0),
+    ?assert(maps:get(offline_rejected, Summary) > 0),
+    ?assertEqual(
+        maps:get(attempted, Summary),
+        maps:get(successful, Summary)
+        + maps:get(offline_rejected, Summary)
+        + maps:get(failed, Summary)
+    ).
+
 %% Milestone 2: subreddit management
 
 create_subreddit_test() ->
@@ -278,6 +335,30 @@ empty_post_test() ->
             reddit_client:create_post(Client, "alice", "erlang", "   ")
         )
     end).
+
+feed_merges_multiple_subreddits_by_newest_post_first_test() ->
+    with_engine_client(fun(_Engine, Client) ->
+        register_user(Client, "alice"),
+        reddit_client:create_subreddit(Client, "alice", "erlang"),
+        reddit_client:create_subreddit(Client, "alice", "programming"),
+
+        {ok, FirstId} = reddit_client:create_post(
+            Client, "alice", "erlang", "First"
+        ),
+        {ok, SecondId} = reddit_client:create_post(
+            Client, "alice", "programming", "Second"
+        ),
+        {ok, ThirdId} = reddit_client:create_post(
+            Client, "alice", "erlang", "Third"
+        ),
+
+        {ok, Feed} = reddit_client:get_feed(Client, "alice"),
+        ?assertEqual(
+            [ThirdId, SecondId, FirstId],
+            [maps:get(id, Post) || Post <- Feed]
+        )
+    end).
+
 
 feed_excludes_unjoined_subreddits_test() ->
     with_engine_client(fun(_Engine, Client) ->
@@ -1045,7 +1126,7 @@ full_simulator_workload_test() ->
     ?assertEqual(12, maps:get(attempted, RepostStats)),
     ?assertEqual(12, maps:get(successful, RepostStats)),
     ?assertEqual(0, maps:get(failed, RepostStats)),
-    
+
     %% Comment creation
     CommentStats = maps:get(comment_creation, Stats),
     ?assertEqual(12, maps:get(attempted, CommentStats)),
